@@ -35,15 +35,19 @@ def fit_u(trace, dt):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iters", type=int, default=400)
+    ap.add_argument("--eval-only", action="store_true", help="load results/step2_rnn.pt instead of training")
     args = ap.parse_args()
 
     p = C.plant_params()
     eye = C.make_eye(straight_through=True)
     cfg = TrainConfig(iters=args.iters, lam=C.LAM)
     model = RateRNN(eye.n, n_rec=128, n_out=16, dt=p.dt, in_scale=1 / (eye.r_max * p.dt))
-    train(model, p, eye, cfg, log_path=C.RESULTS / "step2_log.csv",
-          eval_kw=dict(seconds=C.TUNE_SECONDS, batch=C.TUNE_BATCH, seed=C.TUNE_SEED))
-    torch.save(model.state_dict(), C.RESULTS / "step2_rnn.pt")
+    if args.eval_only:
+        model.load_state_dict(torch.load(C.RESULTS / "step2_rnn.pt"))
+    else:
+        train(model, p, eye, cfg, log_path=C.RESULTS / "step2_log.csv",
+              eval_kw=dict(seconds=C.TUNE_SECONDS, batch=C.TUNE_BATCH, seed=C.TUNE_SEED))
+        torch.save(model.state_dict(), C.RESULTS / "step2_rnn.pt")
 
     step1 = json.loads((C.RESULTS / "step1.json").read_text())
     table = dict(step1["controllers"])
