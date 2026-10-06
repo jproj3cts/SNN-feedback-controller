@@ -38,25 +38,29 @@ class GaussianEye:
 
 
 class EyeDecoder:
-    """Exponentially filtered eye spikes -> linear readout of position.
+    """Population-vector decoder: exponentially filtered eye spikes,
+    x_hat = sum_i c_i f_i / sum_i f_i.
 
     Used to give the classical baselines the same sensor as the network.
+    (A plain linear readout of the filtered spikes was tried first and was
+    clearly worse: normalising by total activity removes most of the
+    Poisson count noise.)
     """
 
-    def __init__(self, w: torch.Tensor, b: float, tau: float, dt: float):
-        self.w, self.b, self.tau, self.dt = w, b, tau, dt
+    def __init__(self, centers: torch.Tensor, tau: float, dt: float):
+        self.centers, self.tau, self.dt = centers, tau, dt
         self.f = None
 
     def reset(self, batch: int, n: int):
-        self.f = torch.zeros(batch, n)
+        self.f = torch.full((batch, n), 1e-3)
 
     def __call__(self, spikes: torch.Tensor) -> torch.Tensor:
         self.f = self.f + (self.dt / self.tau) * (spikes.detach() - self.f)
-        return self.f @ self.w + self.b
+        return (self.f * self.centers).sum(-1) / self.f.sum(-1).clamp(min=1e-6)
 
     def state_dict(self):
-        return {"w": self.w, "b": self.b, "tau": self.tau, "dt": self.dt}
+        return {"centers": self.centers, "tau": self.tau, "dt": self.dt}
 
     @classmethod
     def from_state_dict(cls, d):
-        return cls(d["w"], d["b"], d["tau"], d["dt"])
+        return cls(d["centers"], d["tau"], d["dt"])

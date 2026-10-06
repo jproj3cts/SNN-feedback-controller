@@ -125,6 +125,11 @@ def tune(make, x0, cost_fn, maxiter=120):
     def f(logx):
         c = cost_fn(make(np.exp(logx)))
         return c if np.isfinite(c) else 1e6
-    res = sopt.minimize(f, np.log(x0), method="Nelder-Mead",
-                        options={"maxiter": maxiter, "xatol": 1e-2, "fatol": 1e-5})
+    # explicit initial simplex: scipy's default perturbs a log-param of 0
+    # (i.e. x0 = 1) by only 2.5e-4, which leaves it effectively frozen
+    l0 = np.log(np.asarray(x0, dtype=float))
+    simplex = np.vstack([l0] + [l0 + 0.7 * np.eye(len(l0))[i] for i in range(len(l0))])
+    res = sopt.minimize(f, l0, method="Nelder-Mead",
+                        options={"maxiter": maxiter, "xatol": 1e-2, "fatol": 1e-5,
+                                 "initial_simplex": simplex})
     return np.exp(res.x), res.fun

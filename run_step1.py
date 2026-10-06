@@ -1,9 +1,10 @@
 """Step 1: check the eye in isolation, then re-run baselines through it.
 
-1. Simulate a lightly damped, strongly kicked oscillator so x covers the
-   working range, record eye spikes, and fit a linear readout from
-   exponentially filtered spikes to position for several filter time
-   constants. Report error, lag and noise.
+1. Simulate a lightly damped, kicked oscillator so x covers the working
+   range (x_std ~0.4, almost always inside the eye's +-1.2 coverage),
+   record eye spikes and decode position with a population-vector readout
+   of exponentially filtered spikes, for several filter time constants.
+   Report error, lag and noise.
 2. Tune PID and LQG controllers that only see the decoded eye position.
    This is the fair comparison for the learned controllers.
 """
@@ -58,36 +59,31 @@ def best_lag(x, xhat, dt, max_lag=0.2):
 
 
 def fit_decoder(p, eye, tau):
+    """Build the population-vector decoder for this tau and measure it."""
     warm = int(1.0 / p.dt)
-    x_tr, s_tr = record_eye(p, eye, 60.0, 32, seed=7)
     x_te, s_te = record_eye(p, eye, 30.0, 32, seed=8)
-    f_tr = exp_filter(s_tr, tau, p.dt)[warm:]
     f_te = exp_filter(s_te, tau, p.dt)[warm:]
-    # regress onto the low-passed position: matches the LQG measurement model
-    xf_tr = exp_filter(x_tr, tau, p.dt)[warm:]
     xf_te = exp_filter(x_te, tau, p.dt)[warm:]
     x_te = x_te[warm:]
-    F = torch.cat([f_tr.reshape(-1, eye.n), torch.ones(f_tr.numel() // eye.n, 1)], 1).double()
-    y = xf_tr.reshape(-1).double()
-    wb = torch.linalg.solve(F.T @ F + 1e-6 * torch.eye(F.shape[1], dtype=torch.float64), F.T @ y).float()
-    w, b = wb[:-1], wb[-1].item()
-    xhat = f_te @ w + b
+    xhat = (f_te * eye.centers).sum(-1) / f_te.sum(-1).clamp(min=1e-6)
+    near = x_te.abs() < 0.5
     stats = {
         "tau": tau,
         "rmse_vs_x": (xhat - x_te).pow(2).mean().sqrt().item(),
+        "rmse_vs_x_near_target": (xhat - x_te)[near].pow(2).mean().sqrt().item(),
         "rmse_vs_lowpassed_x": (xhat - xf_te).pow(2).mean().sqrt().item(),
         "lag_s": best_lag(x_te, xhat, p.dt),
         "x_std": x_te.std().item(),
         "r2": 1 - (xhat - x_te).pow(2).mean().item() / x_te.var().item(),
     }
-    return EyeDecoder(w, b, tau, p.dt), stats
+    return EyeDecoder(eye.centers, tau, p.dt), stats
 
 
 def main():
     p = C.plant_params()
     eye = C.make_eye()
-    # excitation for decoder fitting: some damping, bigger kicks -> x_rms ~0.7
-    p_fit = dataclasses.replace(p, c=0.2, kick_std=2.0)
+    # excitation for decoder evaluation: some damping -> x_rms ~0.4
+    p_fit = dataclasses.replace(p, c=0.2, kick_std=1.0)
     K = lqr_gain(p, C.LAM)
     step0 = json.loads((C.RESULTS / "step0.json").read_text())
     pid0 = step0["_params"]["pid"]
@@ -102,7 +98,7 @@ def main():
     best = {}
     for tau in TAUS:
         dec, st = fit_decoder(p_fit, eye, tau)
-        print(f"tau={tau*1e3:.0f}ms  rmse(x)={st['rmse_vs_x']:.4f}  rmse(lowpass x)={st['rmse_vs_lowpassed_x']:.4f}"
+        print(f"tau={tau*1e3:.0f}ms  rmse(x)={st['rmse_vs_x']:.4f}  rmse(|x|<0.5)={st['rmse_vs_x_near_target']:.4f}  rmse(lowpass x)={st['rmse_vs_lowpassed_x']:.4f}"
               f"  lag={st['lag_s']*1e3:.0f}ms  R2={st['r2']:.4f}")
         meas_var = st["rmse_vs_lowpassed_x"] ** 2
 
