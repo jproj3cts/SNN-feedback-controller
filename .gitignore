@@ -1,0 +1,3 @@
+__pycache__/
+*.pyc
+results/step2_stdout.txt
