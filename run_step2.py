@@ -78,28 +78,32 @@ def main():
     print(f"\npreview: u ~ -({fit['kx']:.2f} x + {fit['kv']:.2f} v + {fit['ki']:.3f} int x), R^2 = {fit['r2']:.3f}")
     (C.RESULTS / "step2.json").write_text(json.dumps(
         {"table": table, "u_fit": fit, "train_config": dataclasses.asdict(cfg)}, indent=2))
-    plot_learning_curve()
+    plot_learning_curve([C.RESULTS / "step2_log.csv"], C.RESULTS / "step2_learning_curve.png")
 
 
-def plot_learning_curve():
+def plot_learning_curve(log_paths, out_path, labels=None):
     import csv
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    rows = list(csv.DictReader(open(C.RESULTS / "step2_log.csv")))
     step1 = json.loads((C.RESULTS / "step1.json").read_text())["controllers"]
-    it = [int(r["iter"]) for r in rows]
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.semilogy(it, [float(r["loss"]) for r in rows], lw=0.8, alpha=0.6, label="training window loss")
-    ev = [(int(r["iter"]), float(r["eval_cost"])) for r in rows if r.get("eval_cost")]
-    ax.semilogy(*zip(*ev), "o-", label="eval cost")
+    for n, path in enumerate(log_paths):
+        rows = list(csv.DictReader(open(path)))
+        it = [int(r["iter"]) for r in rows]
+        lab = labels[n] if labels else ""
+        line, = ax.semilogy(it, [float(r["loss"]) for r in rows], lw=0.6, alpha=0.4,
+                            label=f"training window loss {lab}".strip())
+        ev = [(int(r["iter"]), float(r["eval_cost"])) for r in rows if r.get("eval_cost")]
+        ax.semilogy(*zip(*ev), "o-", ms=4, color=line.get_color(), label=f"eval cost {lab}".strip())
     for name, ls in (("LQR (true state)", "--"), ("PID (eye)", ":"), ("LQG (eye)", "-.")):
         ax.axhline(step1[name]["cost"], color="k", ls=ls, lw=1, label=name)
     ax.set_xlabel("training window (2 s each, never reset)")
     ax.set_ylabel("cost  <x² + λu²>")
     ax.legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(C.RESULTS / "step2_learning_curve.png", dpi=120)
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
 
 
 if __name__ == "__main__":

@@ -82,3 +82,78 @@ class ModelController:
     def act(self, obs):
         self.state, cmd = self.model.step(self.state, obs["spikes"])
         return cmd
+
+
+class SpikeFn(torch.autograd.Function):
+    """Heaviside spike with a fast-sigmoid surrogate gradient (Zenke & Ganguli 2018).
+
+    backward: gamma / (1 + slope * |v - 1|)^2
+    gamma < 1 damps gradient growth through long, closed-loop BPTT windows.
+    """
+    slope = 5.0
+    gamma = 0.5
+
+    @staticmethod
+    def forward(ctx, v):
+        ctx.save_for_backward(v)
+        return (v > 1.0).float()
+
+    @staticmethod
+    def backward(ctx, grad):
+        (v,) = ctx.saved_tensors
+        return grad * SpikeFn.gamma / (1.0 + SpikeFn.slope * (v - 1.0).abs()) ** 2
+
+
+spike_fn = SpikeFn.apply
+
+
+class LIFSNN(nn.Module):
+    """Recurrent LIF network with push/pull LIF output populations.
+
+    Current-based synapses, soft reset (subtract threshold), threshold 1:
+        i[t+1] = b_syn * i[t] + W_in s_eye + W_rec s_rec + bias
+        v[t+1] = b_mem * v[t] + i[t+1] - s[t]
+        s[t+1] = H(v[t+1] - 1)
+    Output neurons have the same dynamics and receive only recurrent spikes.
+    The readout filters each output population's spike count; command =
+    gain * (push rate - pull rate), with rates in spikes per step.
+    """
+
+    def __init__(self, n_in: int, n_rec: int = 128, n_out: int = 16, tau_mem: float = 0.02,
+                 tau_syn: float = 0.005, tau_out: float = 0.05, dt: float = 0.002,
+                 p_conn: float = 0.2, w_in: float = 0.2, w_rec: float = 0.02, w_out: float = 0.04,
+                 gain: float = 40.0, seed: int = 0):
+        super().__init__()
+        g = torch.Generator().manual_seed(seed)
+        self.n_rec, self.n_out = n_rec, n_out
+        self.b_mem = float(torch.exp(torch.tensor(-dt / tau_mem)))
+        self.b_syn = float(torch.exp(torch.tensor(-dt / tau_syn)))
+        self.W_in = nn.Parameter(w_in * torch.randn(n_rec, n_in, generator=g))
+        mask = (torch.rand(n_rec, n_rec, generator=g) < p_conn).float()
+        mask.fill_diagonal_(0)
+        self.register_buffer("mask", mask)
+        self.W_rec = nn.Parameter(w_rec * torch.randn(n_rec, n_rec, generator=g))
+        # init scales chosen so the untrained network fires sparsely:
+        # ~20 Hz recurrent, ~15 Hz output, almost no silent neurons
+        self.bias = nn.Parameter(torch.zeros(n_rec))
+        self.W_out = nn.Parameter(w_out * torch.randn(2 * n_out, n_rec, generator=g))
+        self.bias_out = nn.Parameter(torch.zeros(2 * n_out))
+        self.readout = PushPullReadout(tau_out, dt, gain)
+
+    def init_state(self, batch: int):
+        z = lambda n: torch.zeros(batch, n)
+        return {"i": z(self.n_rec), "v": z(self.n_rec), "s": z(self.n_rec),
+                "io": z(2 * self.n_out), "vo": z(2 * self.n_out), "so": z(2 * self.n_out),
+                "filt": z(2)}
+
+    def step(self, state, spikes):
+        s = state["s"]
+        i = self.b_syn * state["i"] + spikes @ self.W_in.T + s @ (self.W_rec * self.mask).T + self.bias
+        v = self.b_mem * state["v"] + i - s.detach()   # soft reset, reset path not differentiated
+        s_new = spike_fn(v)
+        io = self.b_syn * state["io"] + s_new @ self.W_out.T + self.bias_out
+        vo = self.b_mem * state["vo"] + io - state["so"].detach()
+        so = spike_fn(vo)
+        filt, cmd = self.readout(state["filt"], so[:, :self.n_out], so[:, self.n_out:])
+        return {"i": i, "v": v, "s": s_new, "io": io, "vo": vo, "so": so, "filt": filt,
+                "rec": s_new, "out": so}, cmd
