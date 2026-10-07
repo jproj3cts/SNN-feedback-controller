@@ -89,9 +89,11 @@ class SpikeFn(torch.autograd.Function):
 
     backward: gamma / (1 + slope * |v - 1|)^2
     gamma < 1 damps gradient growth through long, closed-loop BPTT windows.
+    With gamma = 0.5 gradient norms exploded (>2000) within ~60 windows of
+    1000 steps; gamma = 0.3 (Bellec et al. 2018) kept them below 1.
     """
     slope = 5.0
-    gamma = 0.5
+    gamma = 0.3
 
     @staticmethod
     def forward(ctx, v):
