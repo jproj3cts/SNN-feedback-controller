@@ -17,7 +17,7 @@ import torch
 from snnfc import config as C
 from snnfc.baselines import LQGEye
 from snnfc.eye import EyeDecoder
-from snnfc.models import LIFSNN, ModelController, RateRNN
+from snnfc.models import LIFSNN, ModelController, RateRNN, SpikeFn
 from snnfc.plant import Oscillator
 from snnfc.plotting import plot_traces
 from snnfc.sim import evaluate
@@ -27,26 +27,26 @@ from run_step2 import fit_u, plot_learning_curve
 torch.set_num_threads(1)
 
 
-def ckpt(seed):
-    return C.RESULTS / f"step3_snn_s{seed}.pt"
+def ckpt(seed, tag=""):
+    return C.RESULTS / f"step3{tag}_snn_s{seed}.pt"
 
 
-def log(seed):
-    return C.RESULTS / f"step3_log_s{seed}.csv"
+def log(seed, tag=""):
+    return C.RESULTS / f"step3{tag}_log_s{seed}.csv"
 
 
 def make_snn(eye, p, seed):
     return LIFSNN(eye.n, n_rec=128, n_out=16, dt=p.dt, seed=seed)
 
 
-def run_train(seed, iters):
+def run_train(seed, iters, tag="", eye_grad=True, **cfg_kw):
     p = C.plant_params()
-    eye = C.make_eye(straight_through=True)
+    eye = C.make_eye(straight_through=eye_grad)
     model = make_snn(eye, p, seed)
-    cfg = TrainConfig(iters=iters, lam=C.LAM, seed=seed)
-    train(model, p, eye, cfg, log_path=log(seed),
+    cfg = TrainConfig(iters=iters, lam=C.LAM, seed=seed, **cfg_kw)
+    train(model, p, eye, cfg, log_path=log(seed, tag),
           eval_kw=dict(seconds=C.TUNE_SECONDS, batch=C.TUNE_BATCH, seed=C.TUNE_SEED))
-    torch.save(model.state_dict(), ckpt(seed))
+    torch.save(model.state_dict(), ckpt(seed, tag))
 
 
 @torch.no_grad()
@@ -170,11 +170,18 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--iters", type=int, default=800)
     ap.add_argument("--report", type=int, nargs="+", metavar="SEED")
+    ap.add_argument("--tag", default="", help="suffix for checkpoint/log names (diagnostic sweeps)")
+    ap.add_argument("--gamma", type=float, default=SpikeFn.gamma, help="surrogate gradient scale")
+    ap.add_argument("--no-eye-grad", action="store_true", help="cut the gradient path through the eye")
+    ap.add_argument("--window", type=int, default=TrainConfig.window)
+    ap.add_argument("--lr", type=float, default=TrainConfig.lr)
     args = ap.parse_args()
+    SpikeFn.gamma = args.gamma
     if args.report:
         report(args.report)
     else:
-        run_train(args.seed, args.iters)
+        run_train(args.seed, args.iters, tag=args.tag, eye_grad=not args.no_eye_grad,
+                  window=args.window, lr=args.lr)
 
 
 if __name__ == "__main__":
